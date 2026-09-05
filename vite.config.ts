@@ -11,5 +11,7 @@ export default defineConfig({
   preview: {
     host: '0.0.0.0',
     port: 4173,
+    // Cloudflare / other tunnels rewrite Host; allow all for demo sharing.
+    allowedHosts: true,
   },
 })
