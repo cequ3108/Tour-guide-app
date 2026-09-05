@@ -43,11 +43,16 @@ export default function App() {
   const startedRef = useRef(false)
   const autoRef = useRef(true)
   const focusRef = useRef<StoryTheme | null>(null)
+  const playRef = useRef(stories.playForProgress)
+  const speakRef = useRef<(clip: NarrationClip, preface?: string) => void>(
+    () => undefined,
+  )
 
   progressRef.current = drive.progress
   startedRef.current = started
   autoRef.current = stories.autoContinue
   focusRef.current = stories.focusTheme
+  playRef.current = stories.playForProgress
 
   const setPlaybackRate = speech.setPlaybackRate
   useEffect(() => {
@@ -56,11 +61,12 @@ export default function App() {
 
   const queueNext = () => {
     if (!startedRef.current || !autoRef.current) return
-    const next = stories.playForProgress(
+    // Always call the latest engine function via ref to avoid stale "heard" state.
+    const next = playRef.current(
       progressRef.current,
       focusRef.current ?? undefined,
     )
-    if (next) speakClip(next)
+    if (next) speakRef.current(next)
   }
 
   const speakClip = (clip: NarrationClip, preface?: string) => {
@@ -81,6 +87,7 @@ export default function App() {
       onEnded: queueNext,
     })
   }
+  speakRef.current = speakClip
 
   const setSpeedBoth = (mul: number) => {
     drive.setSpeedMul(mul)
@@ -255,7 +262,9 @@ export default function App() {
                   ? '瀏覽器備援'
                   : '無語音'}
               {' · '}
-              剩餘可聽約 {stories.remainingMin} / {stories.totalMin} 分
+              已聽 {stories.heardCount}/{stories.totalClips} 則（不重複往前接）
+              {' · '}
+              剩餘約 {stories.remainingMin} / {stories.totalMin} 分
             </p>
           </div>
 
@@ -288,7 +297,7 @@ export default function App() {
                 <p className="eyebrow">準備連播說書</p>
                 <h2>開起來之後，故事會一段接一段</h2>
                 <p className="script">
-                  點倍速會同時加快車速與語音。若你提問感興趣的主題，我會立刻改講那一類，並讓後續連播跟著調整。
+                  點倍速會同時加快車速與語音。每則故事只講一次，講完會往下一段與沿途小村落過渡，不會卡在同題重播；你一提問，焦點也會立刻轉向。
                 </p>
               </>
             )}

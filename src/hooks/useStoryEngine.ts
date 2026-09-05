@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from 'react'
+import { useCallback, useMemo, useRef, useState } from 'react'
 import {
   NARRATION_CLIPS,
   TOTAL_NARRATION_MIN,
@@ -20,20 +20,18 @@ const DEFAULT_PREFS: Prefs = {
 function scoreClip(
   clip: NarrationClip,
   prefs: Prefs,
-  heard: Set<string>,
   progress: number,
   focusTheme: StoryTheme | null,
 ) {
-  const freshness = heard.has(clip.id) ? -8 : 3
-  const inWindow =
-    progress >= clip.progressMin - 0.03 && progress <= clip.progressMax + 0.12
-      ? 5
-      : progress < clip.progressMin
-        ? 1.5
-        : -1.5
-  const behindPenalty = clip.progressMax < progress - 0.14 ? -4 : 0
-  const focusBonus = focusTheme && clip.theme === focusTheme ? 9 : 0
-  return prefs[clip.theme] * 2.4 + freshness + inWindow + behindPenalty + focusBonus
+  const mid = (clip.progressMin + clip.progressMax) / 2
+  const ahead = mid >= progress - 0.02
+  const distance = Math.abs(mid - progress)
+
+  // Prefer forward storytelling so the journey feels continuous.
+  const forwardBonus = ahead ? 6 - Math.min(5, distance * 12) : -3 - distance * 8
+  const focusBonus = focusTheme && clip.theme === focusTheme ? 8 : 0
+  const roadBonus = !clip.poiId && ahead && distance < 0.12 ? 2.5 : 0
+  return prefs[clip.theme] * 2.2 + forwardBonus + focusBonus + roadBonus
 }
 
 export function useStoryEngine() {
@@ -44,16 +42,27 @@ export function useStoryEngine() {
   const [autoContinue, setAutoContinue] = useState(true)
   const [focusTheme, setFocusTheme] = useState<StoryTheme | null>(null)
 
+  // Synchronous source of truth — avoids replaying due to stale React closures.
+  const heardRef = useRef<Set<string>>(new Set())
+  const focusRef = useRef<StoryTheme | null>(null)
+  const prefsRef = useRef(prefs)
+  prefsRef.current = prefs
+  focusRef.current = focusTheme
+
   const activePoi = useMemo(() => {
     if (!activeClip?.poiId) return null
     return POINTS_OF_INTEREST.find((p) => p.id === activeClip.poiId) ?? null
   }, [activeClip])
 
   const bumpTheme = useCallback((theme: StoryTheme, delta = 1.25) => {
-    setPrefs((prev) => ({
-      ...prev,
-      [theme]: Math.min(12, prev[theme] + delta),
-    }))
+    setPrefs((prev) => {
+      const next = {
+        ...prev,
+        [theme]: Math.min(12, prev[theme] + delta),
+      }
+      prefsRef.current = next
+      return next
+    })
   }, [])
 
   const remainingSec = useMemo(
@@ -67,26 +76,34 @@ export function useStoryEngine() {
 
   const pickNext = useCallback(
     (progress: number, themeBoost?: StoryTheme) => {
-      const focus = themeBoost ?? focusTheme
-      const ranked = NARRATION_CLIPS.filter((c) => !heard.has(c.id))
+      const heardNow = heardRef.current
+      const focus = themeBoost ?? focusRef.current
+      const unheard = NARRATION_CLIPS.filter((c) => !heardNow.has(c.id))
+      if (unheard.length === 0) return null
+
+      const ranked = unheard
         .map((c) => ({
           c,
-          s: scoreClip(c, prefs, heard, progress, focus),
+          s: scoreClip(c, prefsRef.current, progress, focus),
         }))
         .sort((a, b) => b.s - a.s)
       return ranked[0]?.c ?? null
     },
-    [focusTheme, heard, prefs],
+    [],
   )
 
   const startClip = useCallback(
     (clip: NarrationClip) => {
+      // Mark heard immediately so the next onEnded pick cannot reselect it.
+      const nextHeard = new Set(heardRef.current)
+      nextHeard.add(clip.id)
+      heardRef.current = nextHeard
+      setHeard(nextHeard)
       setActiveClip(clip)
-      setHeard((prev) => new Set(prev).add(clip.id))
       setVisitLog((prev) =>
-        [`${clip.placeLabel}｜${clip.title}`, ...prev].slice(0, 16),
+        [`${clip.placeLabel}｜${clip.title}`, ...prev].slice(0, 20),
       )
-      bumpTheme(clip.theme, 0.1)
+      bumpTheme(clip.theme, 0.08)
       return clip
     },
     [bumpTheme],
@@ -106,48 +123,65 @@ export function useStoryEngine() {
 
   const forcePoi = useCallback(
     (poiId: string) => {
+      const heardNow = heardRef.current
+      const poiProgress =
+        POINTS_OF_INTEREST.find((p) => p.id === poiId)?.progress ?? 0
       const clip =
-        NARRATION_CLIPS.find((c) => c.poiId === poiId && !heard.has(c.id)) ||
-        NARRATION_CLIPS.find((c) => c.poiId === poiId) ||
-        null
+        NARRATION_CLIPS.find((c) => c.poiId === poiId && !heardNow.has(c.id)) ||
+        // If this town is exhausted, ease into the next road/village segment.
+        NARRATION_CLIPS.find(
+          (c) =>
+            !c.poiId &&
+            !heardNow.has(c.id) &&
+            c.progressMin >= poiProgress - 0.02,
+        ) ||
+        pickNext(poiProgress)
       if (!clip) return null
       return startClip(clip)
     },
-    [heard, startClip],
+    [pickNext, startClip],
   )
 
-  /** Immediately pivot playlist toward a theme the driver asked about. */
   const askAbout = useCallback(
     (theme: StoryTheme) => {
       setFocusTheme(theme)
+      focusRef.current = theme
       bumpTheme(theme, 2.2)
       const progress = activeClip
         ? (activeClip.progressMin + activeClip.progressMax) / 2
         : 0
+      const heardNow = heardRef.current
 
-      // Prefer nearby unheard clips of that theme, then any unheard, then replay.
       const themed =
         NARRATION_CLIPS.find(
           (c) =>
             c.theme === theme &&
-            !heard.has(c.id) &&
-            Math.abs((c.progressMin + c.progressMax) / 2 - progress) <= 0.28,
+            !heardNow.has(c.id) &&
+            (c.progressMin + c.progressMax) / 2 >= progress - 0.05,
         ) ||
-        NARRATION_CLIPS.find((c) => c.theme === theme && !heard.has(c.id)) ||
-        NARRATION_CLIPS.find((c) => c.theme === theme)
+        NARRATION_CLIPS.find((c) => c.theme === theme && !heardNow.has(c.id)) ||
+        // Never hard-loop the same clip while other unheard content remains.
+        NARRATION_CLIPS.find((c) => !heardNow.has(c.id)) ||
+        null
       if (!themed) return null
       return startClip(themed)
     },
-    [activeClip, bumpTheme, heard, startClip],
+    [activeClip, bumpTheme, startClip],
   )
 
-  const clearFocus = useCallback(() => setFocusTheme(null), [])
+  const clearFocus = useCallback(() => {
+    focusRef.current = null
+    setFocusTheme(null)
+  }, [])
 
   const resetEngine = useCallback(() => {
+    heardRef.current = new Set()
+    focusRef.current = null
     setActiveClip(null)
     setHeard(new Set())
     setVisitLog([])
     setPrefs(DEFAULT_PREFS)
+    prefsRef.current = DEFAULT_PREFS
     setAutoContinue(true)
     setFocusTheme(null)
   }, [])
@@ -177,5 +211,7 @@ export function useStoryEngine() {
     bumpTheme,
     clearFocus,
     resetEngine,
+    heardCount: heard.size,
+    totalClips: NARRATION_CLIPS.length,
   }
 }
