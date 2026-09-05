@@ -15,7 +15,7 @@ type SpeakOptions = {
  * - a brand-new Audio() is created for the next chapter, or
  * - src changes / load() completes.
  * Keep one Audio element, re-apply rate on media events, and run a
- * short watchdog so 2x/4x survives chapter changes and ask pivots.
+ * short watchdog so 2x survives chapter changes and ask pivots.
  */
 export function useSpeech() {
   const [speaking, setSpeaking] = useState(false)

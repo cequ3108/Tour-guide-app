@@ -30,6 +30,13 @@ const ASK_BRIDGES: Record<StoryTheme, string> = {
   nature: '好，那我先帶你看風景與地景。',
 }
 
+/** Drive + voice multipliers shown in the control strip. */
+const SPEED_OPTIONS = [1, 1.25, 1.5, 1.75, 2] as const
+
+function formatSpeed(mul: number) {
+  return `${mul}x`
+}
+
 export default function App() {
   const drive = useDriveSimulation({
     baseSpeedKmh: 57,
@@ -222,7 +229,7 @@ export default function App() {
               >
                 {!started ? '出發' : drive.playing ? '暫停' : '繼續開'}
               </button>
-              {[1, 2, 4].map((m) => (
+              {SPEED_OPTIONS.map((m) => (
                 <button
                   key={m}
                   type="button"
@@ -230,7 +237,7 @@ export default function App() {
                   onClick={() => setSpeedBoth(m)}
                   title="同時調整行車速度與語音倍速"
                 >
-                  {m}x
+                  {formatSpeed(m)}
                 </button>
               ))}
               <button
@@ -250,7 +257,8 @@ export default function App() {
               </button>
             </div>
             <p className="hint">
-              倍速同步：行車 {drive.speedMul}x · 語音 {speech.playbackRate}x
+              倍速同步：行車 {formatSpeed(drive.speedMul)} · 語音{' '}
+              {formatSpeed(speech.playbackRate)}
               {' · '}
               {speech.engine === 'neural'
                 ? '神經語音'

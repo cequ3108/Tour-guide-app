@@ -311,8 +311,9 @@ input {
 }
 
 .btn.chip {
-  padding: 0.5rem 0.75rem;
-  font-size: 0.9rem;
+  padding: 0.5rem 0.65rem;
+  font-size: 0.88rem;
+  font-variant-numeric: tabular-nums;
 }
 
 .btn.chip.on {
