@@ -1,12 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
-import {
-  POINTS_OF_INTEREST,
-  QUICK_QUESTIONS,
-  ROUTE_META,
-  THEME_LABELS,
-  type StoryTheme,
-} from './data/route'
-import { TOTAL_NARRATION_MIN, type NarrationClip } from './data/narration'
+import { QUICK_QUESTIONS, THEME_LABELS, type StoryTheme } from './data/route'
+import { REGION_META, ROAM_MAP_POIS, totalStoryMinutes } from './data/storyCatalog'
+import { DEMO_PATHS, type RoadPath } from './data/roads'
+import type { StorySpot } from './data/storyCatalog'
 import { RouteMap } from './components/RouteMap'
 import { useDriveSimulation } from './hooks/useDriveSimulation'
 import { useSpeech } from './hooks/useSpeech'
@@ -30,7 +26,6 @@ const ASK_BRIDGES: Record<StoryTheme, string> = {
   nature: '好，那我先帶你看風景與地景。',
 }
 
-/** Drive + voice multipliers shown in the control strip. */
 const SPEED_OPTIONS = [1, 1.25, 1.5, 1.75, 2] as const
 
 function formatSpeed(mul: number) {
@@ -39,27 +34,32 @@ function formatSpeed(mul: number) {
 
 export default function App() {
   const drive = useDriveSimulation({
-    baseSpeedKmh: 57,
+    baseSpeedKmh: 48,
     initialPlaying: false,
   })
   const speech = useSpeech()
   const stories = useStoryEngine()
   const [started, setStarted] = useState(false)
   const [answerNote, setAnswerNote] = useState<string | null>(null)
-  const progressRef = useRef(0)
+
   const startedRef = useRef(false)
   const autoRef = useRef(true)
   const focusRef = useRef<StoryTheme | null>(null)
-  const playRef = useRef(stories.playForProgress)
-  const speakRef = useRef<(clip: NarrationClip) => void>(() => undefined)
-
+  const poseRef = useRef({ lat: 0, lng: 0, bearing: 0 })
+  const playRef = useRef(stories.playForPosition)
+  const speakRef = useRef<(clip: StorySpot) => void>(() => undefined)
   const speedMulRef = useRef(drive.speedMul)
-  progressRef.current = drive.progress
+
   startedRef.current = started
   autoRef.current = stories.autoContinue
   focusRef.current = stories.focusTheme
-  playRef.current = stories.playForProgress
+  playRef.current = stories.playForPosition
   speedMulRef.current = drive.speedMul
+  poseRef.current = {
+    lat: drive.position.lat,
+    lng: drive.position.lng,
+    bearing: drive.position.bearing,
+  }
 
   const setPlaybackRate = speech.setPlaybackRate
   useEffect(() => {
@@ -68,20 +68,20 @@ export default function App() {
 
   const queueNext = () => {
     if (!startedRef.current || !autoRef.current) return
+    const { lat, lng, bearing } = poseRef.current
     const next = playRef.current(
-      progressRef.current,
+      { lat, lng },
+      bearing,
       focusRef.current ?? undefined,
     )
     if (next) speakRef.current(next)
   }
 
-  const speakClip = (clip: NarrationClip) => {
-    // Always pass the live multiplier so chapter changes / ask pivots
-    // cannot fall back to a stale 1x closure.
+  const speakClip = (clip: StorySpot) => {
     const rate = speedMulRef.current
     speech.setPlaybackRate(rate)
     speech.speak(`${clip.placeLabel}。${clip.title}。${clip.script}`, {
-      audioUrl: clip.audioUrl,
+      audioUrl: clip.audioUrl || undefined,
       rate,
       onEnded: queueNext,
     })
@@ -98,22 +98,34 @@ export default function App() {
     stories.resetEngine()
     drive.reset()
     speech.stop()
-    // Keep the user's chosen speed; don't silently snap back to 1x.
     speech.setPlaybackRate(speedMulRef.current)
     setStarted(true)
-    setAnswerNote(null)
+    setAnswerNote(
+      `漫遊示範：${drive.path.label}。路線沿實際道路前進，不切西瓜直線。`,
+    )
     drive.setPlaying(true)
-    const first = stories.forcePoi('huwei') || stories.playForProgress(0)
+    const first =
+      stories.forcePoi('chiayi-hall') ||
+      stories.playForPosition(
+        {
+          lat: drive.position.lat,
+          lng: drive.position.lng,
+        },
+        drive.position.bearing,
+      )
     if (first) speakClip(first)
   }
 
   const onAsk = (theme: StoryTheme, label: string) => {
-    const clip = stories.askAbout(theme)
+    const clip = stories.askAbout(
+      theme,
+      { lat: drive.position.lat, lng: drive.position.lng },
+      drive.position.bearing,
+    )
     if (clip) {
-      // Interrupt and pivot, but keep the same neural voice (no browser TTS bridge).
       speakClip(clip)
       setAnswerNote(
-        `${ASK_BRIDGES[theme]}已依「${label}」切到「${THEME_LABELS[theme]}」焦點，後續連播會優先講這類。`,
+        `${ASK_BRIDGES[theme]}已依「${label}」切到「${THEME_LABELS[theme]}」焦點；會優先講視線前方的同類故事。`,
       )
     } else {
       stories.bumpTheme(theme, 2)
@@ -121,14 +133,24 @@ export default function App() {
     }
   }
 
-  const jumpTo = (poiId: string, progress: number) => {
-    drive.setProgress(progress)
+  const jumpToPoi = (poi: (typeof ROAM_MAP_POIS)[number]) => {
+    drive.jumpToLatLng({ lat: poi.lat, lng: poi.lng })
     drive.setPlaying(false)
     setStarted(true)
-    const clip = stories.forcePoi(poiId)
+    const clip = stories.forcePoi(poi.id)
     if (clip) speakClip(clip)
-    setAnswerNote(null)
+    setAnswerNote(`已跳到「${poi.name}」附近（沿目前道路對位，不是直線瞬移切線）。`)
   }
+
+  const switchPath = (next: RoadPath) => {
+    speech.stop()
+    stories.resetEngine()
+    drive.setPath(next)
+    setStarted(false)
+    setAnswerNote(`已切換示範路徑：${next.label}`)
+  }
+
+  const storyMinutes = totalStoryMinutes()
 
   return (
     <div className="app-shell">
@@ -136,30 +158,45 @@ export default function App() {
 
       {!started ? (
         <header className="hero">
-          <p className="brand">{ROUTE_META.brand}</p>
-          <h1>{ROUTE_META.title}</h1>
-          <p className="lede">{ROUTE_META.subtitle}</p>
+          <p className="brand">{REGION_META.brand}</p>
+          <h1>{REGION_META.title}</h1>
+          <p className="lede">{REGION_META.subtitle}</p>
           <p className="lede subtle">
-            本趟備妥約 {TOTAL_NARRATION_MIN}{' '}
-            分鐘說書（含路段連播）。倍速會同時加快行車與語音；你一提問，後續說書會立刻跟著興趣轉向。
+            範圍先鎖定{REGION_META.region}。示範路徑約 {REGION_META.approxKm} km、
+            {storyMinutes} 分鐘可聽素材；選題改看「前方視線」，沒景點就用路名過渡。
           </p>
           <div className="hero-cta">
             <button type="button" className="btn primary" onClick={begin}>
-              開始模擬行駛
+              開始沿路漫遊
             </button>
             <p className="hero-meta">
-              {ROUTE_META.from} → {ROUTE_META.to}
+              {drive.path.fromLabel} → {drive.path.toLabel}
               <span>·</span>
-              約 {ROUTE_META.approxKm} km
+              約 {drive.path.distanceKm} km
+              <span>·</span>
+              沿實際道路
             </p>
+          </div>
+          <div className="path-switch">
+            {DEMO_PATHS.map((p) => (
+              <button
+                key={p.id}
+                type="button"
+                className={`btn chip ${drive.path.id === p.id ? 'on' : ''}`}
+                onClick={() => switchPath(p)}
+              >
+                {p.label}
+              </button>
+            ))}
           </div>
         </header>
       ) : (
         <header className="topbar">
           <div>
-            <p className="brand sm">{ROUTE_META.brand}</p>
+            <p className="brand sm">{REGION_META.brand}</p>
             <p className="route-line">
-              {ROUTE_META.from} → {ROUTE_META.to}
+              {drive.path.fromLabel} → {drive.path.toLabel}
+              <span className="tag soft">無終點漫遊</span>
             </p>
           </div>
           <button
@@ -187,19 +224,22 @@ export default function App() {
             lat={drive.position.lat}
             lng={drive.position.lng}
             bearing={drive.position.bearing}
-            activePoiId={stories.activePoi?.id ?? null}
+            activePoiId={stories.activePoiId}
+            path={drive.path}
+            showVisionCone={started}
           />
           <div className="gps-chip">
             <span className="dot" />
             模擬定位 {formatCoord(drive.position.lat)},{' '}
-            {formatCoord(drive.position.lng)}
+            {formatCoord(drive.position.lng)} · 航向{' '}
+            {Math.round(drive.position.bearing)}°
           </div>
         </section>
 
         <section className="control-panel">
           <div className="progress-block">
             <div className="progress-head">
-              <strong>行駛進度</strong>
+              <strong>沿路進度（示範路徑）</strong>
               <span>
                 已走 {formatKm(drive.distanceKm)} · 剩餘{' '}
                 {formatKm(drive.remainingKm)}
@@ -216,7 +256,7 @@ export default function App() {
                 setStarted(true)
                 drive.setProgress(Number(e.target.value))
               }}
-              aria-label="模擬行駛進度"
+              aria-label="沿路行駛進度"
             />
             <div className="controls">
               <button
@@ -257,8 +297,9 @@ export default function App() {
               </button>
             </div>
             <p className="hint">
-              倍速同步：行車 {formatSpeed(drive.speedMul)} · 語音{' '}
-              {formatSpeed(speech.playbackRate)}
+              選題：{stories.lastPickReason}
+              {' · '}
+              倍速 {formatSpeed(drive.speedMul)}/{formatSpeed(speech.playbackRate)}
               {' · '}
               {speech.engine === 'neural'
                 ? '神經語音'
@@ -266,9 +307,9 @@ export default function App() {
                   ? '瀏覽器備援'
                   : '無語音'}
               {' · '}
-              已聽 {stories.heardCount}/{stories.totalClips} 則（不重複往前接）
+              已聽 {stories.heardCount}/{stories.totalClips}
               {' · '}
-              剩餘約 {stories.remainingMin} / {stories.totalMin} 分
+              剩餘約 {stories.remainingMin}/{stories.totalMin} 分
             </p>
           </div>
 
@@ -279,6 +320,11 @@ export default function App() {
                   {stories.activeClip.placeLabel}
                   <span className="tag">
                     {THEME_LABELS[stories.activeClip.theme]}
+                  </span>
+                  <span className="tag soft">
+                    {stories.activeClip.layer === 'placename'
+                      ? '地名過渡'
+                      : '視線故事'}
                   </span>
                   {stories.focusTheme && (
                     <span className="tag focus">
@@ -298,10 +344,10 @@ export default function App() {
               </>
             ) : (
               <>
-                <p className="eyebrow">準備連播說書</p>
-                <h2>開起來之後，故事會一段接一段</h2>
+                <p className="eyebrow">視線驅動說書</p>
+                <h2>開起來之後，講你前方看得到的</h2>
                 <p className="script">
-                  點倍速會同時加快車速與語音。每則故事只講一次，講完會往下一段與沿途小村落過渡，不會卡在同題重播；你一提問，焦點也會立刻轉向。
+                  不再用「固定路線進度條」硬接故事。系統會看車頭方向與前方視錐，優先講即將進入視線的景點；若這段路比較空，就先用路名、地名幫你過渡，保持臨場感。
                 </p>
               </>
             )}
@@ -310,7 +356,7 @@ export default function App() {
           <section className="ask-panel">
             <h3>跟副駕說一句</h3>
             <p className="ask-lead">
-              一提問就會打斷當前內容、立刻改講該主題，並把後續說書轉向你的興趣。
+              一提問就會打斷當前內容，並在視線前方改找該主題；後續連播也會偏向你的興趣。
             </p>
             <div className="ask-row">
               {QUICK_QUESTIONS.map((q) => (
@@ -352,16 +398,15 @@ export default function App() {
         </section>
       </main>
 
-      <section className="poi-rail" aria-label="沿途故事點">
-        {POINTS_OF_INTEREST.map((p) => {
-          const active = stories.activePoi?.id === p.id
-          const passed = drive.progress >= p.progress
+      <section className="poi-rail" aria-label="可跳轉的故事點">
+        {ROAM_MAP_POIS.map((p) => {
+          const active = stories.activePoiId === p.id
           return (
             <button
               key={p.id}
               type="button"
-              className={`poi-card ${active ? 'active' : ''} ${passed ? 'passed' : ''}`}
-              onClick={() => jumpTo(p.id, p.progress)}
+              className={`poi-card ${active ? 'active' : ''}`}
+              onClick={() => jumpToPoi(p)}
             >
               <strong>
                 {p.name}

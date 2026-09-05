@@ -497,3 +497,21 @@ input {
 .lede.subtle, .hint {
   opacity: 0.86;
 }
+
+.path-switch {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-top: 1rem;
+  justify-content: center;
+}
+
+.tag.soft {
+  border-color: rgba(159, 214, 178, 0.45);
+  color: #9fd6b2;
+}
+
+.route-line .tag {
+  margin-left: 0.45rem;
+  vertical-align: middle;
+}

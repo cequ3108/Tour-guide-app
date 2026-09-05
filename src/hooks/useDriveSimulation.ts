@@ -1,91 +1,43 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { ROUTE_WAYPOINTS } from '../data/route'
+import {
+  DEFAULT_ROAM_PATH,
+  type RoadPath,
+} from '../data/roads'
+import {
+  buildRouteMetrics,
+  interpolateRoute,
+  nearestProgressOnRoute,
+  type LatLng,
+} from '../lib/geo'
 
-export type LatLng = { lat: number; lng: number }
-
-function haversineKm(a: LatLng, b: LatLng) {
-  const R = 6371
-  const dLat = ((b.lat - a.lat) * Math.PI) / 180
-  const dLng = ((b.lng - a.lng) * Math.PI) / 180
-  const lat1 = (a.lat * Math.PI) / 180
-  const lat2 = (b.lat * Math.PI) / 180
-  const h =
-    Math.sin(dLat / 2) ** 2 +
-    Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLng / 2) ** 2
-  return 2 * R * Math.asin(Math.sqrt(h))
-}
-
-function buildRouteMetrics(waypoints: LatLng[]) {
-  const segLens: number[] = []
-  let total = 0
-  for (let i = 0; i < waypoints.length - 1; i++) {
-    const len = haversineKm(waypoints[i], waypoints[i + 1])
-    segLens.push(len)
-    total += len
-  }
-  return { segLens, total }
-}
-
-function interpolateRoute(
-  waypoints: LatLng[],
-  segLens: number[],
-  total: number,
-  progress: number,
-): LatLng & { bearing: number } {
-  const p = Math.min(1, Math.max(0, progress))
-  if (p <= 0) {
-    return { ...waypoints[0], bearing: 180 }
-  }
-  if (p >= 1) {
-    const a = waypoints[waypoints.length - 2]
-    const b = waypoints[waypoints.length - 1]
-    return { ...b, bearing: bearingDegrees(a, b) }
-  }
-
-  let remain = total * p
-  for (let i = 0; i < segLens.length; i++) {
-    const len = segLens[i]
-    if (remain > len) {
-      remain -= len
-      continue
-    }
-    const t = len === 0 ? 0 : remain / len
-    const a = waypoints[i]
-    const b = waypoints[i + 1]
-    return {
-      lat: a.lat + (b.lat - a.lat) * t,
-      lng: a.lng + (b.lng - a.lng) * t,
-      bearing: bearingDegrees(a, b),
-    }
-  }
-  return { ...waypoints[waypoints.length - 1], bearing: 180 }
-}
-
-function bearingDegrees(a: LatLng, b: LatLng) {
-  const lat1 = (a.lat * Math.PI) / 180
-  const lat2 = (b.lat * Math.PI) / 180
-  const dLng = ((b.lng - a.lng) * Math.PI) / 180
-  const y = Math.sin(dLng) * Math.cos(lat2)
-  const x =
-    Math.cos(lat1) * Math.sin(lat2) -
-    Math.sin(lat1) * Math.cos(lat2) * Math.cos(dLng)
-  return ((Math.atan2(y, x) * 180) / Math.PI + 360) % 360
-}
+export type { LatLng }
 
 export function useDriveSimulation(options?: {
   baseSpeedKmh?: number
   initialPlaying?: boolean
+  path?: RoadPath
 }) {
-  const baseSpeedKmh = options?.baseSpeedKmh ?? 72
+  const baseSpeedKmh = options?.baseSpeedKmh ?? 52
+  const [path, setPath] = useState<RoadPath>(
+    () => options?.path ?? DEFAULT_ROAM_PATH,
+  )
+
   const { segLens, total } = useMemo(
-    () => buildRouteMetrics(ROUTE_WAYPOINTS),
-    [],
+    () => buildRouteMetrics(path.waypoints),
+    [path],
   )
 
   const [progress, setProgress] = useState(0)
   const [playing, setPlaying] = useState(options?.initialPlaying ?? false)
   const [speedMul, setSpeedMul] = useState(1)
   const lastTs = useRef<number | null>(null)
+
+  // When the path changes, restart at the beginning of the new road ribbon.
+  useEffect(() => {
+    setProgress(0)
+    setPlaying(false)
+    lastTs.current = null
+  }, [path.id])
 
   useEffect(() => {
     if (!playing) {
@@ -102,6 +54,7 @@ export function useDriveSimulation(options?: {
       setProgress((prev) => {
         const next = prev + delta
         if (next >= 1) {
+          // Soft end: arrive and pause, but do not imply a fixed tour product.
           setPlaying(false)
           return 1
         }
@@ -114,14 +67,21 @@ export function useDriveSimulation(options?: {
   }, [playing, speedMul, baseSpeedKmh, total])
 
   const position = useMemo(
-    () => interpolateRoute(ROUTE_WAYPOINTS, segLens, total, progress),
-    [progress, segLens, total],
+    () => interpolateRoute(path.waypoints, segLens, total, progress),
+    [path.waypoints, progress, segLens, total],
   )
 
   const distanceKm = total * progress
   const remainingKm = Math.max(0, total - distanceKm)
 
+  const jumpToLatLng = (target: LatLng) => {
+    const p = nearestProgressOnRoute(path.waypoints, segLens, total, target)
+    setProgress(p)
+  }
+
   return {
+    path,
+    setPath,
     progress,
     setProgress,
     playing,
@@ -132,6 +92,7 @@ export function useDriveSimulation(options?: {
     totalKm: total,
     distanceKm,
     remainingKm,
+    jumpToLatLng,
     toggle: () => setPlaying((p) => !p),
     reset: () => {
       setPlaying(false)
