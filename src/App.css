@@ -355,6 +355,19 @@ input {
   letter-spacing: 0;
 }
 
+.tag.focus,
+.pref-pill.focus {
+  border-color: var(--amber);
+  background: var(--amber-soft);
+  color: var(--amber);
+}
+
+.btn.ask.on {
+  border-color: var(--amber);
+  background: var(--amber-soft);
+  color: var(--amber);
+}
+
 .story-panel h2,
 .ask-panel h3,
 .log h3 {

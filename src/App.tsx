@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import {
   POINTS_OF_INTEREST,
   QUICK_QUESTIONS,
@@ -21,6 +21,15 @@ function formatCoord(n: number) {
   return n.toFixed(5)
 }
 
+const ASK_BRIDGES: Record<StoryTheme, string> = {
+  food: '好，那我先偏美食來講。',
+  history: '好，那我先把歷史線拉開。',
+  people: '好，那我先講人物與地方脾氣。',
+  legend: '好，那我先講點有趣的奇聞。',
+  industry: '好，那我先從產業與產業地景講起。',
+  nature: '好，那我先帶你看風景與地景。',
+}
+
 export default function App() {
   const drive = useDriveSimulation({
     baseSpeedKmh: 57,
@@ -33,26 +42,56 @@ export default function App() {
   const progressRef = useRef(0)
   const startedRef = useRef(false)
   const autoRef = useRef(true)
+  const focusRef = useRef<StoryTheme | null>(null)
 
   progressRef.current = drive.progress
   startedRef.current = started
   autoRef.current = stories.autoContinue
+  focusRef.current = stories.focusTheme
 
-  const speakClip = (clip: NarrationClip) => {
-    speech.speak(`${clip.placeLabel}。${clip.title}。${clip.script}`, {
+  const setPlaybackRate = speech.setPlaybackRate
+  useEffect(() => {
+    setPlaybackRate(drive.speedMul)
+  }, [drive.speedMul, setPlaybackRate])
+
+  const queueNext = () => {
+    if (!startedRef.current || !autoRef.current) return
+    const next = stories.playForProgress(
+      progressRef.current,
+      focusRef.current ?? undefined,
+    )
+    if (next) speakClip(next)
+  }
+
+  const speakClip = (clip: NarrationClip, preface?: string) => {
+    const body = `${clip.placeLabel}。${clip.title}。${clip.script}`
+    if (preface) {
+      speech.speak(preface, {
+        onEnded: () => {
+          speech.speak(body, {
+            audioUrl: clip.audioUrl,
+            onEnded: queueNext,
+          })
+        },
+      })
+      return
+    }
+    speech.speak(body, {
       audioUrl: clip.audioUrl,
-      onEnded: () => {
-        if (!startedRef.current || !autoRef.current) return
-        const next = stories.playForProgress(progressRef.current)
-        if (next) speakClip(next)
-      },
+      onEnded: queueNext,
     })
+  }
+
+  const setSpeedBoth = (mul: number) => {
+    drive.setSpeedMul(mul)
+    speech.setPlaybackRate(mul)
   }
 
   const begin = () => {
     stories.resetEngine()
     drive.reset()
     speech.stop()
+    speech.setPlaybackRate(1)
     setStarted(true)
     setAnswerNote(null)
     drive.setPlaying(true)
@@ -63,20 +102,14 @@ export default function App() {
   const onAsk = (theme: StoryTheme, label: string) => {
     const clip = stories.askAbout(theme)
     if (clip) {
-      speech.speak(`你問：${label}。${clip.script}`, {
-        audioUrl: clip.audioUrl,
-        onEnded: () => {
-          if (!autoRef.current) return
-          const next = stories.playForProgress(progressRef.current, theme)
-          if (next) speakClip(next)
-        },
-      })
+      // Interrupt current narration and pivot immediately.
+      speakClip(clip, `${ASK_BRIDGES[theme]}你剛問「${label}」，`)
       setAnswerNote(
-        `已加重「${THEME_LABELS[theme]}」興趣，之後會多講這類並繼續連播。`,
+        `已切到「${THEME_LABELS[theme]}」焦點：之後連播會優先講這類，直到你換問題或按「恢復均衡」。`,
       )
     } else {
-      setAnswerNote('暫時沒有對應主題，已先記下你的興趣。')
-      stories.bumpTheme(theme, 1.5)
+      stories.bumpTheme(theme, 2)
+      setAnswerNote('暫時沒有對應片段，但已把這個興趣設成焦點。')
     }
   }
 
@@ -100,7 +133,7 @@ export default function App() {
           <p className="lede">{ROUTE_META.subtitle}</p>
           <p className="lede subtle">
             本趟備妥約 {TOTAL_NARRATION_MIN}{' '}
-            分鐘說書（含路段連播），較能覆蓋單趟車程，並留給二倍速收聽餘量。語音改為較自然的台灣腔神經語音。
+            分鐘說書（含路段連播）。倍速會同時加快行車與語音；你一提問，後續說書會立刻跟著興趣轉向。
           </p>
           <div className="hero-cta">
             <button type="button" className="btn primary" onClick={begin}>
@@ -128,6 +161,7 @@ export default function App() {
               speech.stop()
               stories.resetEngine()
               drive.reset()
+              speech.setPlaybackRate(1)
               setStarted(false)
               setAnswerNote(null)
             }}
@@ -190,7 +224,8 @@ export default function App() {
                   key={m}
                   type="button"
                   className={`btn chip ${drive.speedMul === m ? 'on' : ''}`}
-                  onClick={() => drive.setSpeedMul(m)}
+                  onClick={() => setSpeedBoth(m)}
+                  title="同時調整行車速度與語音倍速"
                 >
                   {m}x
                 </button>
@@ -212,12 +247,13 @@ export default function App() {
               </button>
             </div>
             <p className="hint">
-              語音：
+              倍速同步：行車 {drive.speedMul}x · 語音 {speech.playbackRate}x
+              {' · '}
               {speech.engine === 'neural'
-                ? '神經語音（預錄）'
+                ? '神經語音'
                 : speech.engine === 'browser'
                   ? '瀏覽器備援'
-                  : '無'}
+                  : '無語音'}
               {' · '}
               剩餘可聽約 {stories.remainingMin} / {stories.totalMin} 分
             </p>
@@ -231,6 +267,11 @@ export default function App() {
                   <span className="tag">
                     {THEME_LABELS[stories.activeClip.theme]}
                   </span>
+                  {stories.focusTheme && (
+                    <span className="tag focus">
+                      焦點：{THEME_LABELS[stories.focusTheme]}
+                    </span>
+                  )}
                 </p>
                 <h2>{stories.activeClip.title}</h2>
                 <p className="script">{stories.activeClip.script}</p>
@@ -247,8 +288,7 @@ export default function App() {
                 <p className="eyebrow">準備連播說書</p>
                 <h2>開起來之後，故事會一段接一段</h2>
                 <p className="script">
-                  不再只在景點講一句就結束：路段之間也有說書，講完會自動接下一段。內容量約{' '}
-                  {TOTAL_NARRATION_MIN} 分鐘，較能撐住整趟車程與二倍速。
+                  點倍速會同時加快車速與語音。若你提問感興趣的主題，我會立刻改講那一類，並讓後續連播跟著調整。
                 </p>
               </>
             )}
@@ -257,25 +297,40 @@ export default function App() {
           <section className="ask-panel">
             <h3>跟副駕說一句</h3>
             <p className="ask-lead">
-              發問會加重該領域權重，之後較常講你想聽的，並繼續連播。
+              一提問就會打斷當前內容、立刻改講該主題，並把後續說書轉向你的興趣。
             </p>
             <div className="ask-row">
               {QUICK_QUESTIONS.map((q) => (
                 <button
                   key={q.label}
                   type="button"
-                  className="btn ask"
+                  className={`btn ask ${stories.focusTheme === q.theme ? 'on' : ''}`}
                   onClick={() => onAsk(q.theme, q.label)}
                 >
                   {q.label}
                 </button>
               ))}
+              {stories.focusTheme && (
+                <button
+                  type="button"
+                  className="btn chip"
+                  onClick={() => {
+                    stories.clearFocus()
+                    setAnswerNote('已恢復均衡選題，不再鎖定單一主題。')
+                  }}
+                >
+                  恢復均衡
+                </button>
+              )}
             </div>
             {answerNote && <p className="note">{answerNote}</p>}
             <div className="pref-row">
               <span>目前興趣偏向：</span>
               {stories.topThemes.map(([theme, score]) => (
-                <span key={theme} className="pref-pill">
+                <span
+                  key={theme}
+                  className={`pref-pill ${stories.focusTheme === theme ? 'focus' : ''}`}
+                >
                   {THEME_LABELS[theme]} {score.toFixed(1)}
                 </span>
               ))}

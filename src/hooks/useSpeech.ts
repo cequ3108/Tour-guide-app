@@ -9,11 +9,22 @@ export function useSpeech() {
   const [speaking, setSpeaking] = useState(false)
   const [supported, setSupported] = useState(true)
   const [engine, setEngine] = useState<'neural' | 'browser' | 'none'>('neural')
+  const [playbackRate, setPlaybackRateState] = useState(1)
   const audioRef = useRef<HTMLAudioElement | null>(null)
   const endedRef = useRef<(() => void) | null>(null)
+  const rateRef = useRef(1)
 
   useEffect(() => {
     setSupported(typeof window !== 'undefined')
+  }, [])
+
+  const setPlaybackRate = useCallback((rate: number) => {
+    const next = Math.min(4, Math.max(0.5, rate))
+    rateRef.current = next
+    setPlaybackRateState(next)
+    if (audioRef.current) {
+      audioRef.current.playbackRate = next
+    }
   }, [])
 
   const stop = useCallback(() => {
@@ -42,7 +53,8 @@ export function useSpeech() {
     window.speechSynthesis.cancel()
     const u = new SpeechSynthesisUtterance(text)
     u.lang = 'zh-TW'
-    u.rate = 0.92
+    // Browser TTS gets harsh above ~2x; keep intelligible.
+    u.rate = Math.min(2, Math.max(0.7, 0.92 * rateRef.current))
     u.pitch = 1.05
     const voices = window.speechSynthesis.getVoices()
     const preferred =
@@ -73,6 +85,7 @@ export function useSpeech() {
       }
 
       const audio = new Audio(options.audioUrl)
+      audio.playbackRate = rateRef.current
       audioRef.current = audio
       setEngine('neural')
       audio.onplay = () => setSpeaking(true)
@@ -88,5 +101,13 @@ export function useSpeech() {
 
   useEffect(() => () => stop(), [stop])
 
-  return { speak, stop, speaking, supported, engine }
+  return {
+    speak,
+    stop,
+    speaking,
+    supported,
+    engine,
+    playbackRate,
+    setPlaybackRate,
+  }
 }

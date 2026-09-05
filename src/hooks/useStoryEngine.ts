@@ -22,16 +22,18 @@ function scoreClip(
   prefs: Prefs,
   heard: Set<string>,
   progress: number,
+  focusTheme: StoryTheme | null,
 ) {
   const freshness = heard.has(clip.id) ? -8 : 3
   const inWindow =
-    progress >= clip.progressMin - 0.03 && progress <= clip.progressMax + 0.1
+    progress >= clip.progressMin - 0.03 && progress <= clip.progressMax + 0.12
       ? 5
       : progress < clip.progressMin
         ? 1.5
         : -1.5
   const behindPenalty = clip.progressMax < progress - 0.14 ? -4 : 0
-  return prefs[clip.theme] * 2.2 + freshness + inWindow + behindPenalty
+  const focusBonus = focusTheme && clip.theme === focusTheme ? 9 : 0
+  return prefs[clip.theme] * 2.4 + freshness + inWindow + behindPenalty + focusBonus
 }
 
 export function useStoryEngine() {
@@ -40,6 +42,7 @@ export function useStoryEngine() {
   const [activeClip, setActiveClip] = useState<NarrationClip | null>(null)
   const [visitLog, setVisitLog] = useState<string[]>([])
   const [autoContinue, setAutoContinue] = useState(true)
+  const [focusTheme, setFocusTheme] = useState<StoryTheme | null>(null)
 
   const activePoi = useMemo(() => {
     if (!activeClip?.poiId) return null
@@ -49,7 +52,7 @@ export function useStoryEngine() {
   const bumpTheme = useCallback((theme: StoryTheme, delta = 1.25) => {
     setPrefs((prev) => ({
       ...prev,
-      [theme]: Math.min(10, prev[theme] + delta),
+      [theme]: Math.min(12, prev[theme] + delta),
     }))
   }, [])
 
@@ -64,16 +67,16 @@ export function useStoryEngine() {
 
   const pickNext = useCallback(
     (progress: number, themeBoost?: StoryTheme) => {
+      const focus = themeBoost ?? focusTheme
       const ranked = NARRATION_CLIPS.filter((c) => !heard.has(c.id))
-        .map((c) => {
-          let s = scoreClip(c, prefs, heard, progress)
-          if (themeBoost && c.theme === themeBoost) s += 5
-          return { c, s }
-        })
+        .map((c) => ({
+          c,
+          s: scoreClip(c, prefs, heard, progress, focus),
+        }))
         .sort((a, b) => b.s - a.s)
       return ranked[0]?.c ?? null
     },
-    [heard, prefs],
+    [focusTheme, heard, prefs],
   )
 
   const startClip = useCallback(
@@ -83,7 +86,7 @@ export function useStoryEngine() {
       setVisitLog((prev) =>
         [`${clip.placeLabel}｜${clip.title}`, ...prev].slice(0, 16),
       )
-      bumpTheme(clip.theme, 0.12)
+      bumpTheme(clip.theme, 0.1)
       return clip
     },
     [bumpTheme],
@@ -113,18 +116,22 @@ export function useStoryEngine() {
     [heard, startClip],
   )
 
+  /** Immediately pivot playlist toward a theme the driver asked about. */
   const askAbout = useCallback(
     (theme: StoryTheme) => {
-      bumpTheme(theme, 1.6)
+      setFocusTheme(theme)
+      bumpTheme(theme, 2.2)
       const progress = activeClip
         ? (activeClip.progressMin + activeClip.progressMax) / 2
         : 0
+
+      // Prefer nearby unheard clips of that theme, then any unheard, then replay.
       const themed =
         NARRATION_CLIPS.find(
           (c) =>
             c.theme === theme &&
             !heard.has(c.id) &&
-            c.progressMin <= progress + 0.22,
+            Math.abs((c.progressMin + c.progressMax) / 2 - progress) <= 0.28,
         ) ||
         NARRATION_CLIPS.find((c) => c.theme === theme && !heard.has(c.id)) ||
         NARRATION_CLIPS.find((c) => c.theme === theme)
@@ -134,12 +141,15 @@ export function useStoryEngine() {
     [activeClip, bumpTheme, heard, startClip],
   )
 
+  const clearFocus = useCallback(() => setFocusTheme(null), [])
+
   const resetEngine = useCallback(() => {
     setActiveClip(null)
     setHeard(new Set())
     setVisitLog([])
     setPrefs(DEFAULT_PREFS)
     setAutoContinue(true)
+    setFocusTheme(null)
   }, [])
 
   const topThemes = useMemo(
@@ -153,6 +163,7 @@ export function useStoryEngine() {
   return {
     prefs,
     topThemes,
+    focusTheme,
     activeClip,
     activePoi,
     visitLog,
@@ -164,6 +175,7 @@ export function useStoryEngine() {
     forcePoi,
     askAbout,
     bumpTheme,
+    clearFocus,
     resetEngine,
   }
 }
