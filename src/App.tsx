@@ -46,11 +46,13 @@ export default function App() {
   const playRef = useRef(stories.playForProgress)
   const speakRef = useRef<(clip: NarrationClip) => void>(() => undefined)
 
+  const speedMulRef = useRef(drive.speedMul)
   progressRef.current = drive.progress
   startedRef.current = started
   autoRef.current = stories.autoContinue
   focusRef.current = stories.focusTheme
   playRef.current = stories.playForProgress
+  speedMulRef.current = drive.speedMul
 
   const setPlaybackRate = speech.setPlaybackRate
   useEffect(() => {
@@ -67,15 +69,20 @@ export default function App() {
   }
 
   const speakClip = (clip: NarrationClip) => {
-    // Always use the same pre-rendered neural voice as the main line.
+    // Always pass the live multiplier so chapter changes / ask pivots
+    // cannot fall back to a stale 1x closure.
+    const rate = speedMulRef.current
+    speech.setPlaybackRate(rate)
     speech.speak(`${clip.placeLabel}。${clip.title}。${clip.script}`, {
       audioUrl: clip.audioUrl,
+      rate,
       onEnded: queueNext,
     })
   }
   speakRef.current = speakClip
 
   const setSpeedBoth = (mul: number) => {
+    speedMulRef.current = mul
     drive.setSpeedMul(mul)
     speech.setPlaybackRate(mul)
   }
@@ -84,7 +91,8 @@ export default function App() {
     stories.resetEngine()
     drive.reset()
     speech.stop()
-    speech.setPlaybackRate(1)
+    // Keep the user's chosen speed; don't silently snap back to 1x.
+    speech.setPlaybackRate(speedMulRef.current)
     setStarted(true)
     setAnswerNote(null)
     drive.setPlaying(true)
@@ -154,6 +162,8 @@ export default function App() {
               speech.stop()
               stories.resetEngine()
               drive.reset()
+              speedMulRef.current = 1
+              drive.setSpeedMul(1)
               speech.setPlaybackRate(1)
               setStarted(false)
               setAnswerNote(null)
