@@ -85,7 +85,7 @@ export function useSpeech() {
   )
 
   const speakNeural = useCallback(
-    (text: string, audioUrl: string) => {
+    (_text: string, audioUrl: string) => {
       const audio = new Audio()
       audio.preload = 'auto'
       audio.src = audioUrl
