@@ -479,3 +479,7 @@ input {
 .preview .map-panel {
   opacity: 0.92;
 }
+
+.lede.subtle, .hint {
+  opacity: 0.86;
+}

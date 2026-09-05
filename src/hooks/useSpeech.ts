@@ -1,44 +1,92 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 
+type SpeakOptions = {
+  audioUrl?: string
+  onEnded?: () => void
+}
+
 export function useSpeech() {
   const [speaking, setSpeaking] = useState(false)
-  const [supported, setSupported] = useState(false)
-  const utteranceRef = useRef<SpeechSynthesisUtterance | null>(null)
+  const [supported, setSupported] = useState(true)
+  const [engine, setEngine] = useState<'neural' | 'browser' | 'none'>('neural')
+  const audioRef = useRef<HTMLAudioElement | null>(null)
+  const endedRef = useRef<(() => void) | null>(null)
 
   useEffect(() => {
-    setSupported(typeof window !== 'undefined' && 'speechSynthesis' in window)
+    setSupported(typeof window !== 'undefined')
   }, [])
 
   const stop = useCallback(() => {
-    if (typeof window === 'undefined' || !('speechSynthesis' in window)) return
-    window.speechSynthesis.cancel()
-    utteranceRef.current = null
+    endedRef.current = null
+    if (audioRef.current) {
+      audioRef.current.onended = null
+      audioRef.current.onerror = null
+      audioRef.current.pause()
+      audioRef.current.removeAttribute('src')
+      audioRef.current = null
+    }
+    if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
+      window.speechSynthesis.cancel()
+    }
     setSpeaking(false)
   }, [])
 
+  const speakBrowser = useCallback((text: string) => {
+    if (typeof window === 'undefined' || !('speechSynthesis' in window)) {
+      setEngine('none')
+      setSupported(false)
+      endedRef.current?.()
+      return
+    }
+    setEngine('browser')
+    window.speechSynthesis.cancel()
+    const u = new SpeechSynthesisUtterance(text)
+    u.lang = 'zh-TW'
+    u.rate = 0.92
+    u.pitch = 1.05
+    const voices = window.speechSynthesis.getVoices()
+    const preferred =
+      voices.find((v) => /hsiao|chen|google.?國語|meijia|tingting/i.test(v.name)) ||
+      voices.find((v) => v.lang.toLowerCase() === 'zh-tw') ||
+      voices.find((v) => v.lang.toLowerCase().startsWith('zh'))
+    if (preferred) u.voice = preferred
+    u.onstart = () => setSpeaking(true)
+    u.onend = () => {
+      setSpeaking(false)
+      endedRef.current?.()
+    }
+    u.onerror = () => {
+      setSpeaking(false)
+      endedRef.current?.()
+    }
+    window.speechSynthesis.speak(u)
+  }, [])
+
   const speak = useCallback(
-    (text: string) => {
-      if (typeof window === 'undefined' || !('speechSynthesis' in window)) return
-      window.speechSynthesis.cancel()
-      const u = new SpeechSynthesisUtterance(text)
-      u.lang = 'zh-TW'
-      u.rate = 1.02
-      u.pitch = 1
-      const voices = window.speechSynthesis.getVoices()
-      const tw =
-        voices.find((v) => v.lang === 'zh-TW') ||
-        voices.find((v) => v.lang.toLowerCase().startsWith('zh'))
-      if (tw) u.voice = tw
-      u.onstart = () => setSpeaking(true)
-      u.onend = () => setSpeaking(false)
-      u.onerror = () => setSpeaking(false)
-      utteranceRef.current = u
-      window.speechSynthesis.speak(u)
+    (text: string, options?: SpeakOptions) => {
+      stop()
+      endedRef.current = options?.onEnded ?? null
+
+      if (!options?.audioUrl) {
+        speakBrowser(text)
+        return
+      }
+
+      const audio = new Audio(options.audioUrl)
+      audioRef.current = audio
+      setEngine('neural')
+      audio.onplay = () => setSpeaking(true)
+      audio.onended = () => {
+        setSpeaking(false)
+        endedRef.current?.()
+      }
+      audio.onerror = () => speakBrowser(text)
+      void audio.play().catch(() => speakBrowser(text))
     },
-    [],
+    [speakBrowser, stop],
   )
 
   useEffect(() => () => stop(), [stop])
 
-  return { speak, stop, speaking, supported }
+  return { speak, stop, speaking, supported, engine }
 }

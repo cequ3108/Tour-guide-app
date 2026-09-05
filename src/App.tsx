@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useRef, useState } from 'react'
 import {
   POINTS_OF_INTEREST,
   QUICK_QUESTIONS,
@@ -6,6 +6,7 @@ import {
   THEME_LABELS,
   type StoryTheme,
 } from './data/route'
+import { TOTAL_NARRATION_MIN, type NarrationClip } from './data/narration'
 import { RouteMap } from './components/RouteMap'
 import { useDriveSimulation } from './hooks/useDriveSimulation'
 import { useSpeech } from './hooks/useSpeech'
@@ -21,47 +22,60 @@ function formatCoord(n: number) {
 }
 
 export default function App() {
-  const drive = useDriveSimulation({ initialPlaying: false })
+  const drive = useDriveSimulation({
+    baseSpeedKmh: 57,
+    initialPlaying: false,
+  })
   const speech = useSpeech()
   const stories = useStoryEngine()
   const [started, setStarted] = useState(false)
   const [answerNote, setAnswerNote] = useState<string | null>(null)
-  const lastTriggerProgress = useRef(-1)
+  const progressRef = useRef(0)
+  const startedRef = useRef(false)
+  const autoRef = useRef(true)
 
-  const tryTriggerAtProgress = stories.tryTriggerAtProgress
-  const speak = speech.speak
+  progressRef.current = drive.progress
+  startedRef.current = started
+  autoRef.current = stories.autoContinue
 
-  useEffect(() => {
-    if (!started) return
-    if (Math.abs(drive.progress - lastTriggerProgress.current) < 0.001) return
-    lastTriggerProgress.current = drive.progress
-    const hit = tryTriggerAtProgress(drive.progress)
-    if (hit) {
-      speak(`${hit.poi.name}。${hit.story.script}`)
-      setAnswerNote(null)
-    }
-  }, [drive.progress, started, tryTriggerAtProgress, speak])
+  const speakClip = (clip: NarrationClip) => {
+    speech.speak(`${clip.placeLabel}。${clip.title}。${clip.script}`, {
+      audioUrl: clip.audioUrl,
+      onEnded: () => {
+        if (!startedRef.current || !autoRef.current) return
+        const next = stories.playForProgress(progressRef.current)
+        if (next) speakClip(next)
+      },
+    })
+  }
 
   const begin = () => {
     stories.resetEngine()
     drive.reset()
     speech.stop()
-    lastTriggerProgress.current = -1
     setStarted(true)
     setAnswerNote(null)
     drive.setPlaying(true)
-    // 出發點先講虎尾
-    const first = stories.forcePoi('huwei')
-    if (first) speech.speak(`${first.poi.name}。${first.story.script}`)
+    const first = stories.forcePoi('huwei') || stories.playForProgress(0)
+    if (first) speakClip(first)
   }
 
   const onAsk = (theme: StoryTheme, label: string) => {
-    const story = stories.askAbout(theme)
-    if (story) {
-      speech.speak(`你問：${label}。${story.script}`)
-      setAnswerNote(`已加重「${THEME_LABELS[theme]}」興趣權重，之後會多講這類故事。`)
+    const clip = stories.askAbout(theme)
+    if (clip) {
+      speech.speak(`你問：${label}。${clip.script}`, {
+        audioUrl: clip.audioUrl,
+        onEnded: () => {
+          if (!autoRef.current) return
+          const next = stories.playForProgress(progressRef.current, theme)
+          if (next) speakClip(next)
+        },
+      })
+      setAnswerNote(
+        `已加重「${THEME_LABELS[theme]}」興趣，之後會多講這類並繼續連播。`,
+      )
     } else {
-      setAnswerNote('這個地點暫時沒有對應主題的故事，已先記下你的興趣。')
+      setAnswerNote('暫時沒有對應主題，已先記下你的興趣。')
       stories.bumpTheme(theme, 1.5)
     }
   }
@@ -70,11 +84,9 @@ export default function App() {
     drive.setProgress(progress)
     drive.setPlaying(false)
     setStarted(true)
-    const hit = stories.forcePoi(poiId)
-    if (hit) {
-      speech.speak(`${hit.poi.name}。${hit.story.script}`)
-      setAnswerNote(null)
-    }
+    const clip = stories.forcePoi(poiId)
+    if (clip) speakClip(clip)
+    setAnswerNote(null)
   }
 
   return (
@@ -86,6 +98,10 @@ export default function App() {
           <p className="brand">{ROUTE_META.brand}</p>
           <h1>{ROUTE_META.title}</h1>
           <p className="lede">{ROUTE_META.subtitle}</p>
+          <p className="lede subtle">
+            本趟備妥約 {TOTAL_NARRATION_MIN}{' '}
+            分鐘說書（含路段連播），較能覆蓋單趟車程，並留給二倍速收聽餘量。語音改為較自然的台灣腔神經語音。
+          </p>
           <div className="hero-cta">
             <button type="button" className="btn primary" onClick={begin}>
               開始模擬行駛
@@ -131,7 +147,8 @@ export default function App() {
           />
           <div className="gps-chip">
             <span className="dot" />
-            模擬定位 {formatCoord(drive.position.lat)}, {formatCoord(drive.position.lng)}
+            模擬定位 {formatCoord(drive.position.lat)},{' '}
+            {formatCoord(drive.position.lng)}
           </div>
         </section>
 
@@ -180,6 +197,13 @@ export default function App() {
               ))}
               <button
                 type="button"
+                className={`btn chip ${stories.autoContinue ? 'on' : ''}`}
+                onClick={() => stories.setAutoContinue(!stories.autoContinue)}
+              >
+                {stories.autoContinue ? '連播中' : '連播關'}
+              </button>
+              <button
+                type="button"
                 className="btn chip"
                 onClick={() => speech.stop()}
                 disabled={!speech.speaking}
@@ -187,40 +211,44 @@ export default function App() {
                 停止語音
               </button>
             </div>
-            {!speech.supported && (
-              <p className="hint">此瀏覽器不支援語音朗讀，仍可閱讀文字故事。</p>
-            )}
+            <p className="hint">
+              語音：
+              {speech.engine === 'neural'
+                ? '神經語音（預錄）'
+                : speech.engine === 'browser'
+                  ? '瀏覽器備援'
+                  : '無'}
+              {' · '}
+              剩餘可聽約 {stories.remainingMin} / {stories.totalMin} 分
+            </p>
           </div>
 
           <article className="story-panel">
-            {stories.activeStory && stories.activePoi ? (
+            {stories.activeClip ? (
               <>
                 <p className="eyebrow">
-                  {stories.activePoi.county} · {stories.activePoi.name}
+                  {stories.activeClip.placeLabel}
                   <span className="tag">
-                    {THEME_LABELS[stories.activeStory.theme]}
+                    {THEME_LABELS[stories.activeClip.theme]}
                   </span>
                 </p>
-                <h2>{stories.activeStory.title}</h2>
-                <p className="script">{stories.activeStory.script}</p>
+                <h2>{stories.activeClip.title}</h2>
+                <p className="script">{stories.activeClip.script}</p>
                 <button
                   type="button"
                   className="btn ghost"
-                  onClick={() =>
-                    speech.speak(
-                      `${stories.activePoi?.name}。${stories.activeStory?.script}`,
-                    )
-                  }
+                  onClick={() => speakClip(stories.activeClip!)}
                 >
                   {speech.speaking ? '朗讀中…' : '再聽一次'}
                 </button>
               </>
             ) : (
               <>
-                <p className="eyebrow">等待下一個故事點</p>
-                <h2>把車開起來，故事會自己找上門</h2>
+                <p className="eyebrow">準備連播說書</p>
+                <h2>開起來之後，故事會一段接一段</h2>
                 <p className="script">
-                  這是模擬定位模式：進度條前進時，系統會在虎尾、斗南、大林、民雄、嘉義、水上、後壁、新營觸發解說。假設你沒來過，就用第一次造訪的耳朵來聽。
+                  不再只在景點講一句就結束：路段之間也有說書，講完會自動接下一段。內容量約{' '}
+                  {TOTAL_NARRATION_MIN} 分鐘，較能撐住整趟車程與二倍速。
                 </p>
               </>
             )}
@@ -229,7 +257,7 @@ export default function App() {
           <section className="ask-panel">
             <h3>跟副駕說一句</h3>
             <p className="ask-lead">
-              發問會加重該領域權重，之後較少重複、較常講你想聽的。
+              發問會加重該領域權重，之後較常講你想聽的，並繼續連播。
             </p>
             <div className="ask-row">
               {QUICK_QUESTIONS.map((q) => (
@@ -237,7 +265,6 @@ export default function App() {
                   key={q.label}
                   type="button"
                   className="btn ask"
-                  disabled={!stories.activePoi}
                   onClick={() => onAsk(q.theme, q.label)}
                 >
                   {q.label}
