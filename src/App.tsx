@@ -323,7 +323,7 @@ export default function App() {
                   </span>
                   <span className="tag soft">
                     {stories.activeClip.layer === 'placename'
-                      ? '地名過渡'
+                      ? '地名故事'
                       : '視線故事'}
                   </span>
                   {stories.focusTheme && (

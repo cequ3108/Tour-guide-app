@@ -135,7 +135,7 @@ export function useStoryEngine() {
       if (best) {
         const reason =
           best.spot.layer === 'placename'
-            ? '前方暫無強景點，先用路名／地名過渡'
+            ? `前方地名故事：${best.spot.placeLabel}`
             : '視線前方即將／正在進入的故事'
         return { spot: best.spot, reason }
       }
