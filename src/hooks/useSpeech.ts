@@ -5,6 +5,11 @@ type SpeakOptions = {
   onEnded?: () => void
 }
 
+/**
+ * Story playback prefers one consistent neural voice.
+ * Browser TTS is only a last-resort fallback for short system lines,
+ * never for main story clips (avoids sudden voice/speed changes).
+ */
 export function useSpeech() {
   const [speaking, setSpeaking] = useState(false)
   const [supported, setSupported] = useState(true)
@@ -34,6 +39,7 @@ export function useSpeech() {
       audioRef.current.onerror = null
       audioRef.current.pause()
       audioRef.current.removeAttribute('src')
+      audioRef.current.load()
       audioRef.current = null
     }
     if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
@@ -42,61 +48,92 @@ export function useSpeech() {
     setSpeaking(false)
   }, [])
 
-  const speakBrowser = useCallback((text: string) => {
-    if (typeof window === 'undefined' || !('speechSynthesis' in window)) {
-      setEngine('none')
-      setSupported(false)
-      endedRef.current?.()
-      return
-    }
-    setEngine('browser')
-    window.speechSynthesis.cancel()
-    const u = new SpeechSynthesisUtterance(text)
-    u.lang = 'zh-TW'
-    // Browser TTS gets harsh above ~2x; keep intelligible.
-    u.rate = Math.min(2, Math.max(0.7, 0.92 * rateRef.current))
-    u.pitch = 1.05
-    const voices = window.speechSynthesis.getVoices()
-    const preferred =
-      voices.find((v) => /hsiao|chen|google.?國語|meijia|tingting/i.test(v.name)) ||
-      voices.find((v) => v.lang.toLowerCase() === 'zh-tw') ||
-      voices.find((v) => v.lang.toLowerCase().startsWith('zh'))
-    if (preferred) u.voice = preferred
-    u.onstart = () => setSpeaking(true)
-    u.onend = () => {
-      setSpeaking(false)
-      endedRef.current?.()
-    }
-    u.onerror = () => {
-      setSpeaking(false)
-      endedRef.current?.()
-    }
-    window.speechSynthesis.speak(u)
+  const finish = useCallback(() => {
+    setSpeaking(false)
+    const cb = endedRef.current
+    endedRef.current = null
+    cb?.()
   }, [])
 
-  const speak = useCallback(
-    (text: string, options?: SpeakOptions) => {
-      stop()
-      endedRef.current = options?.onEnded ?? null
-
-      if (!options?.audioUrl) {
-        speakBrowser(text)
+  const speakBrowser = useCallback(
+    (text: string) => {
+      if (typeof window === 'undefined' || !('speechSynthesis' in window)) {
+        setEngine('none')
+        setSupported(false)
+        finish()
         return
       }
+      setEngine('browser')
+      window.speechSynthesis.cancel()
+      const u = new SpeechSynthesisUtterance(text)
+      u.lang = 'zh-TW'
+      // Keep fallback milder than drive multiplier so it never sounds panicked.
+      u.rate = Math.min(1.15, Math.max(0.85, 0.95 * Math.min(rateRef.current, 1.25)))
+      u.pitch = 1
+      const voices = window.speechSynthesis.getVoices()
+      const preferred =
+        voices.find((v) => /hsiao|chen|meijia|tingting/i.test(v.name)) ||
+        voices.find((v) => v.lang.toLowerCase() === 'zh-tw') ||
+        voices.find((v) => v.lang.toLowerCase().startsWith('zh'))
+      if (preferred) u.voice = preferred
+      u.onstart = () => setSpeaking(true)
+      u.onend = () => finish()
+      u.onerror = () => finish()
+      window.speechSynthesis.speak(u)
+    },
+    [finish],
+  )
 
-      const audio = new Audio(options.audioUrl)
+  const speakNeural = useCallback(
+    (text: string, audioUrl: string) => {
+      const audio = new Audio()
+      audio.preload = 'auto'
+      audio.src = audioUrl
       audio.playbackRate = rateRef.current
       audioRef.current = audio
       setEngine('neural')
-      audio.onplay = () => setSpeaking(true)
-      audio.onended = () => {
-        setSpeaking(false)
-        endedRef.current?.()
+
+      const onReadyPlay = () => {
+        setSpeaking(true)
+        void audio.play().catch(() => {
+          // Keep voice consistent: do not switch timbre; skip ahead instead.
+          finish()
+        })
       }
-      audio.onerror = () => speakBrowser(text)
-      void audio.play().catch(() => speakBrowser(text))
+
+      audio.onended = () => finish()
+      audio.onerror = () => {
+        // Avoid sudden browser-voice swap on iPad load glitches.
+        finish()
+      }
+
+      if (audio.readyState >= 2) onReadyPlay()
+      else {
+        audio.oncanplay = () => {
+          audio.oncanplay = null
+          onReadyPlay()
+        }
+        audio.load()
+      }
     },
-    [speakBrowser, stop],
+    [finish],
+  )
+
+  const speak = useCallback(
+    (text: string, options?: SpeakOptions) => {
+      // Preserve callback across stop()'s clearing by setting after stop.
+      const onEnded = options?.onEnded ?? null
+      stop()
+      endedRef.current = onEnded
+
+      if (options?.audioUrl) {
+        speakNeural(text, options.audioUrl)
+        return
+      }
+      // No audioUrl: short UI lines only.
+      speakBrowser(text)
+    },
+    [speakBrowser, speakNeural, stop],
   )
 
   useEffect(() => () => stop(), [stop])

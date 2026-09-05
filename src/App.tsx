@@ -44,9 +44,7 @@ export default function App() {
   const autoRef = useRef(true)
   const focusRef = useRef<StoryTheme | null>(null)
   const playRef = useRef(stories.playForProgress)
-  const speakRef = useRef<(clip: NarrationClip, preface?: string) => void>(
-    () => undefined,
-  )
+  const speakRef = useRef<(clip: NarrationClip) => void>(() => undefined)
 
   progressRef.current = drive.progress
   startedRef.current = started
@@ -61,7 +59,6 @@ export default function App() {
 
   const queueNext = () => {
     if (!startedRef.current || !autoRef.current) return
-    // Always call the latest engine function via ref to avoid stale "heard" state.
     const next = playRef.current(
       progressRef.current,
       focusRef.current ?? undefined,
@@ -69,20 +66,9 @@ export default function App() {
     if (next) speakRef.current(next)
   }
 
-  const speakClip = (clip: NarrationClip, preface?: string) => {
-    const body = `${clip.placeLabel}。${clip.title}。${clip.script}`
-    if (preface) {
-      speech.speak(preface, {
-        onEnded: () => {
-          speech.speak(body, {
-            audioUrl: clip.audioUrl,
-            onEnded: queueNext,
-          })
-        },
-      })
-      return
-    }
-    speech.speak(body, {
+  const speakClip = (clip: NarrationClip) => {
+    // Always use the same pre-rendered neural voice as the main line.
+    speech.speak(`${clip.placeLabel}。${clip.title}。${clip.script}`, {
       audioUrl: clip.audioUrl,
       onEnded: queueNext,
     })
@@ -109,10 +95,10 @@ export default function App() {
   const onAsk = (theme: StoryTheme, label: string) => {
     const clip = stories.askAbout(theme)
     if (clip) {
-      // Interrupt current narration and pivot immediately.
-      speakClip(clip, `${ASK_BRIDGES[theme]}你剛問「${label}」，`)
+      // Interrupt and pivot, but keep the same neural voice (no browser TTS bridge).
+      speakClip(clip)
       setAnswerNote(
-        `已切到「${THEME_LABELS[theme]}」焦點：之後連播會優先講這類，直到你換問題或按「恢復均衡」。`,
+        `${ASK_BRIDGES[theme]}已依「${label}」切到「${THEME_LABELS[theme]}」焦點，後續連播會優先講這類。`,
       )
     } else {
       stories.bumpTheme(theme, 2)
