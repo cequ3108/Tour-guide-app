@@ -41,8 +41,16 @@ export function useSpeech() {
 
   const ensureAudio = useCallback(() => {
     if (!audioRef.current) {
-      audioRef.current = new Audio()
-      audioRef.current.preload = 'auto'
+      const audio = new Audio()
+      audio.preload = 'auto'
+      // Keep in DOM so mobile WebViews treat rate changes more reliably
+      // and so we can inspect playbackRate during QA.
+      audio.dataset.tourNarration = '1'
+      audio.style.display = 'none'
+      if (typeof document !== 'undefined') {
+        document.body.appendChild(audio)
+      }
+      audioRef.current = audio
     }
     return audioRef.current
   }, [])
@@ -263,6 +271,7 @@ export function useSpeech() {
       if (audioRef.current) {
         detachHandlers(audioRef.current)
         audioRef.current.pause()
+        audioRef.current.remove()
         audioRef.current = null
       }
       if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
